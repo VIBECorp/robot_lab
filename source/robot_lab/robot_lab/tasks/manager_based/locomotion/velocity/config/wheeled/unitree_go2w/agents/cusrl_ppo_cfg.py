@@ -46,3 +46,13 @@ class UnitreeGo2WRoughTrainerCfg(TrainerCfg):
 class UnitreeGo2WFlatTrainerCfg(UnitreeGo2WRoughTrainerCfg):
     max_iterations = 5000
     experiment_name = "unitree_go2w_flat"
+
+
+@dataclass
+class UnitreeGo2WWalkingRoughTrainerCfg(UnitreeGo2WRoughTrainerCfg):
+    experiment_name = "unitree_go2w_walking_rough"
+
+
+@dataclass
+class UnitreeGo2WWalkingRoughV1TrainerCfg(UnitreeGo2WRoughTrainerCfg):
+    experiment_name = "unitree_go2w_walking_rough_v1"

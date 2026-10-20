@@ -33,6 +33,9 @@ import robot_lab.tasks.manager_based.locomotion.velocity.mdp as mdp
 ##
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort: skip
 
+# Env-local +Z for the rail root Xform (pivot on bottom plane of RAIL_60E1_10).
+RAIL_ROOT_Z_OFFSET_M = 0.0
+
 
 ##
 # Scene definition
@@ -90,6 +93,26 @@ class MySceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DomeLightCfg(
             intensity=750.0,
             texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
+        ),
+    )
+
+
+@configclass
+class WalkingWithRailSceneCfg(MySceneCfg):
+    """Rough terrain scene with a per-env kinematic rail (Walking-v1)."""
+
+    replicate_physics: bool = False
+
+    rail = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Rail",
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, RAIL_ROOT_Z_OFFSET_M)),
+        collision_group=0,
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="/home/gpu/Git_krri/isaac_assets/RAIL_60E1_10.usd",
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=True,
+                disable_gravity=True,
+            ),
         ),
     )
 
@@ -739,5 +762,6 @@ class LocomotionVelocityRoughEnvCfg(ManagerBasedRLEnvCfg):
         for attr in dir(self.rewards):
             if not attr.startswith("__"):
                 reward_attr = getattr(self.rewards, attr)
-                if not callable(reward_attr) and reward_attr.weight == 0:
-                    setattr(self.rewards, attr, None)
+                if reward_attr is not None and not callable(reward_attr) and hasattr(reward_attr, "weight"):
+                    if reward_attr.weight == 0:
+                        setattr(self.rewards, attr, None)

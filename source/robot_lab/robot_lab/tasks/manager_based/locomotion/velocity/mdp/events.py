@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Literal
 
 import torch
@@ -15,6 +16,105 @@ from .utils import is_env_assigned_to_terrain
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
+
+
+def assign_unique_subterrain_cell_per_env(env: ManagerBasedEnv, env_ids):
+    """Assign each env to a unique terrain cell when the terrain grid is large enough."""
+    del env_ids
+
+    terrain = env.scene.terrain
+    if terrain is None or terrain.terrain_origins is None:
+        return
+
+    terrain_origins = terrain.terrain_origins
+    num_rows, num_cols = int(terrain_origins.shape[0]), int(terrain_origins.shape[1])
+    num_cells = num_rows * num_cols
+    num_envs = env.num_envs
+    if num_envs > num_cells:
+        return
+
+    device = terrain_origins.device
+    idx = torch.arange(num_envs, device=device, dtype=torch.long)
+    rows = idx // num_cols
+    cols = idx % num_cols
+    terrain.env_origins[:num_envs] = terrain_origins[rows, cols]
+    terrain.terrain_levels = rows.clone()
+    terrain.terrain_types = cols.clone()
+
+
+def align_env_root_xforms_with_terrain_origins(env: ManagerBasedEnv, env_ids):
+    """Move ``/World/envs/env_*`` Xforms to terrain origins before simulation starts."""
+    del env_ids
+
+    terrain = env.scene.terrain
+    if terrain is None or not getattr(terrain.cfg, "use_terrain_origins", False):
+        return
+
+    origins = terrain.env_origins
+    if origins is None:
+        return
+
+    from isaaclab.sim.utils.transforms import standardize_xform_ops
+
+    stage = env.scene.stage
+    prim_paths = env.scene.env_prim_paths
+    num_envs = min(len(prim_paths), origins.shape[0])
+    for env_idx in range(num_envs):
+        prim = stage.GetPrimAtPath(prim_paths[env_idx])
+        if not prim.IsValid() or not prim.IsActive():
+            continue
+        x, y, z = float(origins[env_idx, 0]), float(origins[env_idx, 1]), float(origins[env_idx, 2])
+        standardize_xform_ops(prim, translation=(x, y, z))
+
+
+def ensure_rail_physics_colliders(
+    env: ManagerBasedEnv,
+    env_ids,
+    rail_child_name: str = "Rail",
+):
+    """Add PhysX collision APIs to rail Mesh/Cube prims before simulation starts.
+
+    ``UsdFileCfg.collision_props`` can only update existing collision APIs. The
+    rail USD may contain plain Mesh/Cube prims, so we explicitly define the
+    collision schema here to make robot-rail contact active.
+    """
+    del env_ids
+
+    from pxr import Usd, UsdPhysics
+
+    from isaaclab.sim import schemas
+    from isaaclab.sim.schemas import schemas_cfg
+
+    stage = env.scene.stage
+    kinematic_cfg = schemas_cfg.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True)
+    collision_cfg = schemas_cfg.CollisionPropertiesCfg(collision_enabled=True)
+    convex_cfg = schemas_cfg.ConvexHullPropertiesCfg()
+
+    def subtree_has_rigid_body(root) -> bool:
+        for prim in Usd.PrimRange(root):
+            if UsdPhysics.RigidBodyAPI(prim):
+                return True
+        return False
+
+    for env_path in env.scene.env_prim_paths:
+        rail_path = f"{env_path}/{rail_child_name}"
+        rail_prim = stage.GetPrimAtPath(rail_path)
+        if not rail_prim.IsValid():
+            continue
+
+        if not subtree_has_rigid_body(rail_prim):
+            schemas.define_rigid_body_properties(rail_path, kinematic_cfg, stage=stage)
+
+        for prim in Usd.PrimRange(rail_prim):
+            if prim.IsInstance():
+                continue
+            prim_type = prim.GetTypeName()
+            prim_path = str(prim.GetPath())
+            if prim_type == "Mesh":
+                schemas.define_collision_properties(prim_path, collision_cfg, stage=stage)
+                schemas.define_mesh_collision_properties(prim_path, convex_cfg, stage=stage)
+            elif prim_type == "Cube":
+                schemas.define_collision_properties(prim_path, collision_cfg, stage=stage)
 
 
 def randomize_rigid_body_inertia(
@@ -269,3 +369,66 @@ def reset_root_state_uniform(
         # set into the physics simulation
         asset.write_root_pose_to_sim(torch.cat([positions, orientations], dim=-1), env_ids=non_pit_env_ids)
         asset.write_root_velocity_to_sim(velocities, env_ids=non_pit_env_ids)
+
+
+def reset_root_state_around_rail(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    rail_offset: tuple[float, float] = (0.0, 0.0),
+    spawn_distance_range: tuple[float, float] = (1.0, 3.0),
+    spawn_angle_from_rail_axis_rad: tuple[float, float] = (math.pi / 4, 3.0 * math.pi / 4),
+    yaw_range: tuple[float, float] = (0.0, 2.0 * math.pi),
+    command_name: str = "target_position",
+    initial_height: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    relax_spawn_min_rail_distance: bool | None = None,
+    spawn_distance_range_relaxed: tuple[float, float] | None = None,
+):
+    """Reset robot root around the rail center using rail-axis coordinates."""
+    asset: RigidObject | Articulation = env.scene[asset_cfg.name]
+    n = len(env_ids)
+
+    rail_offset_t = torch.tensor(rail_offset, device=env.device)
+    rail_xy = env.scene.env_origins[env_ids, :2] + rail_offset_t
+
+    cmd_term = env.command_manager.get_term(command_name)
+    cfg = cmd_term.cfg
+    if relax_spawn_min_rail_distance is None:
+        relax_spawn_min_rail_distance = bool(getattr(cfg, "relax_spawn_min_rail_distance", False))
+    if spawn_distance_range_relaxed is None:
+        spawn_distance_range_relaxed = tuple(getattr(cfg, "spawn_distance_range_relaxed", (0.0, 3.0)))
+
+    rail_yaw = float(cfg.rail_yaw)
+    axis = torch.tensor([math.cos(rail_yaw), math.sin(rail_yaw)], device=env.device, dtype=torch.float32)
+    axis = axis.unsqueeze(0).expand(n, 2)
+    perp = torch.stack([-axis[:, 1], axis[:, 0]], dim=1)
+
+    if relax_spawn_min_rail_distance:
+        r_lo, r_hi = spawn_distance_range_relaxed
+        r = torch.empty(n, device=env.device).uniform_(r_lo, r_hi)
+        gamma = torch.empty(n, device=env.device).uniform_(-math.pi, math.pi)
+    else:
+        r = torch.empty(n, device=env.device).uniform_(*spawn_distance_range)
+        gamma_abs = torch.empty(n, device=env.device).uniform_(*spawn_angle_from_rail_axis_rad)
+        gamma_sign = torch.where(torch.rand(n, device=env.device) < 0.5, -1.0, 1.0)
+        gamma = gamma_sign * gamma_abs
+
+    offset = r.unsqueeze(1) * (torch.cos(gamma).unsqueeze(1) * axis + torch.sin(gamma).unsqueeze(1) * perp)
+    root_states = asset.data.default_root_state[env_ids].clone()
+
+    positions = torch.zeros(n, 3, device=env.device)
+    positions[:, 0] = rail_xy[:, 0] + offset[:, 0]
+    positions[:, 1] = rail_xy[:, 1] + offset[:, 1]
+    positions[:, 2] = env.scene.env_origins[env_ids, 2] + root_states[:, 2] + initial_height
+
+    y_lo, y_hi = yaw_range
+    yaw = torch.rand(n, device=env.device) * (y_hi - y_lo) + y_lo
+    orientations = math_utils.quat_from_euler_xyz(
+        torch.zeros(n, device=env.device),
+        torch.zeros(n, device=env.device),
+        yaw,
+    )
+    velocities = torch.zeros(n, 6, device=env.device)
+
+    asset.write_root_pose_to_sim(torch.cat([positions, orientations], dim=-1), env_ids=env_ids)
+    asset.write_root_velocity_to_sim(velocities, env_ids=env_ids)

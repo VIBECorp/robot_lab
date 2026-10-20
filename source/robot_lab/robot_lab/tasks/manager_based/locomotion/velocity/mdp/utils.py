@@ -9,8 +9,25 @@ from typing import TYPE_CHECKING
 
 import torch
 
+import isaaclab.utils.math as math_utils
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
+
+
+def extract_yaw_from_quat(quat: torch.Tensor) -> torch.Tensor:
+    """Extract yaw angle from quaternion (w, x, y, z convention)."""
+    yaw_q = math_utils.yaw_quat(quat)
+    return 2.0 * torch.atan2(yaw_q[..., 3], yaw_q[..., 0])
+
+
+def rotate_vec2d_world_to_body(vec_w: torch.Tensor, yaw: torch.Tensor) -> torch.Tensor:
+    """Rotate 2-D world-frame vectors into the body (yaw-only) frame."""
+    cos_yaw = torch.cos(yaw)
+    sin_yaw = torch.sin(yaw)
+    x_b = cos_yaw * vec_w[:, 0] + sin_yaw * vec_w[:, 1]
+    y_b = -sin_yaw * vec_w[:, 0] + cos_yaw * vec_w[:, 1]
+    return torch.stack([x_b, y_b], dim=-1)
 
 
 def _get_terrain_column_range(terrain_cfg, terrain_name: str, device) -> tuple[int, int] | None:

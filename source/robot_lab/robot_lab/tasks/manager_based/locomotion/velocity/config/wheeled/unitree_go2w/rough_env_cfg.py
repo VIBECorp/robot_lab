@@ -1,6 +1,9 @@
 # Copyright (c) 2024-2026 Ziqi Fan
 # SPDX-License-Identifier: Apache-2.0
 
+import math
+
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
@@ -8,8 +11,10 @@ from isaaclab.utils import configclass
 import robot_lab.tasks.manager_based.locomotion.velocity.mdp as mdp
 from robot_lab.tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
     ActionsCfg,
+    CommandsCfg,
     LocomotionVelocityRoughEnvCfg,
     RewardsCfg,
+    WalkingWithRailSceneCfg,
 )
 
 ##
@@ -152,7 +157,7 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.joint_torques_wheel_l2.params["asset_cfg"].joint_names = self.wheel_joint_names
         self.rewards.joint_vel_l2.weight = 0
         self.rewards.joint_vel_l2.params["asset_cfg"].joint_names = self.leg_joint_names
-        self.rewards.joint_vel_wheel_l2.weight = 0
+        self.rewards.joint_vel_wheel_l2.weight = -1.0e-1
         self.rewards.joint_vel_wheel_l2.params["asset_cfg"].joint_names = self.wheel_joint_names
         self.rewards.joint_acc_l2.weight = -2.5e-7
         self.rewards.joint_acc_l2.params["asset_cfg"].joint_names = self.leg_joint_names
@@ -192,25 +197,27 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.track_ang_vel_z_exp.weight = 1.5
 
         # Others
-        self.rewards.feet_air_time.weight = 0
+        self.rewards.feet_air_time.weight = 0.1
         self.rewards.feet_air_time.params["threshold"] = 0.5
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
+        self.rewards.feet_air_time_variance.weight = -1.0
+        self.rewards.feet_air_time_variance.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_contact.weight = 0
         self.rewards.feet_contact.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_contact_without_cmd.weight = 0.1
         self.rewards.feet_contact_without_cmd.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_stumble.weight = 0
         self.rewards.feet_stumble.params["sensor_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_slide.weight = 0
+        self.rewards.feet_slide.weight = -0.1
         self.rewards.feet_slide.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_slide.params["asset_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_height.weight = 0
-        self.rewards.feet_height.params["target_height"] = 0.1
+        self.rewards.feet_height.params["target_height"] = 0.15
         self.rewards.feet_height.params["asset_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_height_body.weight = 0
+        self.rewards.feet_height_body.weight = -5.0
         self.rewards.feet_height_body.params["target_height"] = -0.2
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_gait.weight = 0
+        self.rewards.feet_gait.weight = 0.5
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("FL_foot", "RR_foot"), ("FR_foot", "RL_foot"))
         self.rewards.upward.weight = 1.0
 
@@ -232,3 +239,104 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
         # self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
         # self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+
+
+@configclass
+class UnitreeGo2WWalkingRoughEnvCfg(UnitreeGo2WRoughEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+
+        # Match the quadruped Go2 rough walking rewards while keeping Go2W-specific joint mappings.
+        self.rewards.feet_air_time.weight = 0.1
+        self.rewards.feet_air_time.params["threshold"] = 0.5
+        self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
+        self.rewards.feet_air_time_variance.weight = -1.0
+        self.rewards.feet_air_time_variance.params["sensor_cfg"].body_names = [self.foot_link_name]
+        self.rewards.feet_slide.weight = -0.1
+        self.rewards.feet_slide.params["sensor_cfg"].body_names = [self.foot_link_name]
+        self.rewards.feet_slide.params["asset_cfg"].body_names = [self.foot_link_name]
+        self.rewards.feet_height_body.weight = -5.0
+        self.rewards.feet_height_body.params["target_height"] = -0.2
+        self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
+        self.rewards.feet_gait.weight = 0.5
+        self.rewards.feet_gait.params["synced_feet_pair_names"] = (("FL_foot", "RR_foot"), ("FR_foot", "RL_foot"))
+
+        if hasattr(self.commands.base_velocity, "ranges"):
+            self.commands.base_velocity.ranges.lin_vel_x = (-0.5, 0.5)
+            self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)
+            self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
+        if hasattr(self.commands.base_velocity, "low_speed_threshold"):
+            self.commands.base_velocity.low_speed_threshold = 0.005
+
+        self.disable_zero_weight_rewards()
+
+
+@configclass
+class WalkingPiCommandsCfg(CommandsCfg):
+    target_position = mdp.RailPlanarPositionCommandCfg(
+        asset_name="robot",
+        resampling_time_range=(10.0, 10.0),
+        debug_vis=False,
+        rail_offset=(0.0, 0.0),
+        rail_yaw=math.pi / 2,
+        spawn_distance_range=(1.0, 3.0),
+        spawn_angle_from_rail_axis_rad=(math.pi / 4, 3.0 * math.pi / 4),
+        relax_spawn_min_rail_distance=False,
+        spawn_distance_range_relaxed=(0.0, 3.0),
+        reach_distance_m=0.15,
+        velocity_bridge_command_name="base_velocity",
+    )
+    base_velocity = mdp.PiVelocityBridgeCommandCfg(
+        asset_name="robot",
+        position_command_name="target_position",
+        resampling_time_range=(1.0e9, 1.0e9),
+        debug_vis=False,
+        kp_lin=0.5,
+        ki_lin=0.05,
+        kp_yaw=0.5,
+        ki_yaw=0.02,
+        v_max=0.5,
+        w_max=0.5,
+        yaw_activate_dist=0.01,
+        low_speed_threshold=0.005,
+    )
+
+
+@configclass
+class UnitreeGo2WWalkingRoughV1EnvCfg(UnitreeGo2WWalkingRoughEnvCfg):
+    scene: WalkingWithRailSceneCfg = WalkingWithRailSceneCfg(num_envs=4096, env_spacing=2.5)
+    commands: WalkingPiCommandsCfg = WalkingPiCommandsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        # Rail colliders add many GPU broadphase pairs; keep enough capacity to avoid missed contacts.
+        self.sim.physx.gpu_found_lost_pairs_capacity = 2**23
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 2**23
+        self.events.assign_unique_subterrain_cell = EventTerm(
+            func=mdp.assign_unique_subterrain_cell_per_env,
+            mode="prestartup",
+        )
+        self.events.align_env_xforms_with_terrain = EventTerm(
+            func=mdp.align_env_root_xforms_with_terrain_origins,
+            mode="prestartup",
+        )
+        self.events.ensure_rail_physics_colliders = EventTerm(
+            func=mdp.ensure_rail_physics_colliders,
+            mode="prestartup",
+            params={"rail_child_name": "Rail"},
+        )
+        self.events.randomize_reset_base = EventTerm(
+            func=mdp.reset_root_state_around_rail,
+            mode="reset",
+            params={
+                "rail_offset": (0.0, 0.0),
+                "spawn_distance_range": (1.0, 3.0),
+                "spawn_angle_from_rail_axis_rad": (math.pi / 4, 3.0 * math.pi / 4),
+                "yaw_range": (0.0, 2.0 * math.pi),
+                "command_name": "target_position",
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        )
+
+        self.disable_zero_weight_rewards()
