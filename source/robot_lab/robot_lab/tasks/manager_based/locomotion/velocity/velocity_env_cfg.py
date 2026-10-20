@@ -27,6 +27,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import robot_lab.tasks.manager_based.locomotion.velocity.mdp as mdp
+from robot_lab.assets import ISAACLAB_ASSETS_DATA_DIR
 
 ##
 # Pre-defined configs
@@ -108,7 +109,7 @@ class WalkingWithRailSceneCfg(MySceneCfg):
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, RAIL_ROOT_Z_OFFSET_M)),
         collision_group=0,
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/gpu/Git_krri/isaac_assets/RAIL_60E1_10.usd",
+            usd_path=f"{ISAACLAB_ASSETS_DATA_DIR}/Props/rail/RAIL_60E1_10.usd",
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
                 disable_gravity=True,
